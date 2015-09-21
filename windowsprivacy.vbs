@@ -239,7 +239,23 @@ End Sub
 Sub GetScriptLocation()
   ' Set if started localy
   If Not Left(WScript.ScriptFullName, 2) = "\\" Then
-    boolStartedLocal = True
+	
+	' What if mounted?
+	Set drv = fso.GetDrive(Left(WScript.ScriptFullName, 1))
+	If Not drv.DriveType = 2 Then
+		' Not a "Fixed" drive, not localy started
+		' 0 = "Unknown"
+		' 1 = "Removable"
+		' 2 = "Fixed"
+		' 3 = "Network"
+		' 4 = "CD-ROM"
+		' 5 = "RAM Disk"
+		' Mounted network location
+		boolStartedLocal = False
+	Else
+		' Fixed drive
+		boolStartedLocal = True
+	End If
   End If
   
   ' Set when local location temp
