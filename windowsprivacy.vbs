@@ -27,10 +27,18 @@ Const ForWriting   = 2
 Const ForAppending = 8
 Const Chars = "abcdefghijklmnopqrstuvwxyz"
 
+' Registry Constants
+Const HKEY_CLASSES_ROOT = &H80000000
+Const HKEY_CURRENT_USER = &H80000001
+Const HKEY_LOCAL_MACHINE = &H80000002
+Const HKEY_USERS = &H80000003
+Const HKEY_CURRENT_CONFIG = &H80000005
+Const HKEY_DYN_DATA      = &h80000006
+
 ' Globals
 Dim fso, wmi, ws, os, sys
 Dim dictUpdates, dictTasks, dictServices
-Dim boolUpdatesDisabled, boolStartedLocal, strTEMPFolderPath, strINIFilePath, strPath, boolTEMPLocation, boolUserInteraction, boolAdmin
+Dim boolUpdatesDisabled, boolStartedLocal, strTEMPFolderPath, strINIFilePath, strPath, boolTEMPLocation, boolUserInteraction, boolAdmin, intOSArch
 
 ' Objects
 Set ws = CreateObject("WScript.Shell")
@@ -44,6 +52,7 @@ Set dictUpdates = CreateObject("Scripting.Dictionary")
 Set dictInstalledUpdates = CreateObject("Scripting.Dictionary")
 Set dictTasks = CreateObject("Scripting.Dictionary")
 Set dictServices = CreateObject("Scripting.Dictionary")
+Set dictAcceptedRegistryTypes = CreateObject("Scripting.Dictionary")
 
 ' Returns True if KB ID is found installed
 Function SearchUpdate(kb)
@@ -158,25 +167,120 @@ Sub ReadINIFile(mySection)
                 strKB = Mid(strKB, 3, Len(strKB))
               End If
               
-              dictUpdates.Add strKB, strInfo
+              If dictUpdates.Exists(strKB) Then
+                Logger("Warning: You have defined update """ & strKB & """ in INI file more than once...")
+              Else
+                dictUpdates.Add strKB, strInfo
+              End If
+              
              End If
             
             ' Tasks
             ElseIf strSection = "Tasks" Then
-            dictTasks.Add strLine, ""
             
-            'Services
+        If dictTasks.Exists(strLine) Then
+          Logger("Warning: You have defined task """ & strLine & """ in INI file more than once...")
+        Else
+          dictTasks.Add strLine, ""
+        End If
+
+           
+            ' Services
             ElseIf strSection = "Services" Then
             
               If InStr(1, strLine, "=", 1) > 0 Then
                 arrData = Split(strLine, "=")
                 strService = Trim(arrData(0))
                 strAction = Trim(arrData(1))
+
+        If dictServices.Exists(strService) Then
+          Logger("Warning: You have defined service """ & strService & """ in INI file more than once...")
+        Else
+          dictServices.Add strService, strAction
+        End If
+                        
                 
-                dictServices.Add strService, strAction
               End If
             
-            End If ' End Section
+            ' Registry
+            ElseIf strSection = "Registry" Then
+              
+              If Left(strLine, 5) = "HKEY_" Then
+                
+                arrData = Split(strLine, "||")
+                
+                arrRootKey = Split(arrData(0), "\") ' HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\Lsa
+                strRoot = UCase(arrRootKey(0)) ' HKEY_LOCAL_MACHINE
+                strKey = arrData(0) ' Copy Array
+                strKey = Replace(strKey, strRoot & "\", "") ' SYSTEM\CurrentControlSet\Control\Lsa
+          
+                strValueName = arrData(1)   ' LmCompatibilityLevel
+                strType = arrData(2)    ' DWORD
+                strValue = arrData(3)    ' 00000002
+                
+                ' Deletion
+                If strType = "DELETE" Then
+
+                  ' Hässlich...
+            Select Case strRoot
+              Case "HKEY_LOCAL_MACHINE" Call RegistryDelete(HKEY_LOCAL_MACHINE, strKey, strValueName)
+              Case "HKEY_CURRENT_USER" Call RegistryDelete(HKEY_CURRENT_USER, strKey, strValueName)
+              Case "HKEY_CLASSES_ROOT" Call RegistryDelete(HKEY_CLASSES_ROOT, strKey, strValueName)
+              Case "HKEY_USERS" Call RegistryDelete(HKEY_USERS, strKey, strValueName)
+              Case Else Logger("Invalid Root " & strRoot & " to perform registry operation.")
+            End Select
+
+                Else
+                
+                  ' Accepted Types
+                  If dictAcceptedRegistryTypes.Exists(strType) Then
+                    
+                    ' Check if Key exists
+                    arrKey = Split(strKey, "\")
+                    tmpKey = ""
+                    
+                    For i=0 To UBound(arrKey)
+                On Error Resume Next
+                  tmpKey = tmpKey & "\" & arrKey(i)
+                  ws.RegRead(strRoot & tmpKey & "\")
+                  
+                  If Err.Number <> 0 Then
+                  
+                    ' Root from Constants
+                    Select Case strRoot
+                      Case "HKEY_LOCAL_MACHINE" Call RegistryWrite("KEY", HKEY_LOCAL_MACHINE, strKey, "", "")
+                      Case "HKEY_CURRENT_USER" Call RegistryWrite("KEY", HKEY_CURRENT_USER, strKey, "", "")
+                      Case "HKEY_CLASSES_ROOT" Call RegistryWrite("KEY", HKEY_CLASSES_ROOT, strKey, "", "")
+                      Case "HKEY_USERS" Call RegistryWrite("KEY", HKEY_USERS, strKey, "", "")
+                      Case Else Logger("Invalid Root " & strRoot & " to perform registry operation.")
+                    End Select
+                  
+                  End If
+                On Error Goto 0
+                    Next
+                    
+                    ' Root from Constants
+              Select Case strRoot
+                Case "HKEY_LOCAL_MACHINE"
+                  Call RegistryWrite(strType, HKEY_LOCAL_MACHINE, strKey, strValueName, strValue)
+                Case "HKEY_CURRENT_USER"
+                  Call RegistryWrite(strType, HKEY_CURRENT_USER, strKey, strValueName, strValue)
+                Case "HKEY_CLASSES_ROOT"
+                  Call RegistryWrite(strType, HKEY_CLASSES_ROOT, strKey, strValueName, strValue)
+                Case "HKEY_USERS"
+                  Call RegistryWrite(strType, HKEY_USERS, strKey, strValueName, strValue)
+                Case Else Logger("Invalid Root " & strRoot & " to perform registry operation.")
+              End Select
+  
+                  Else
+                    Logger("Invalid Type " & strType & " to perform registry operation.")
+                  End If
+
+                End If
+
+              End If ' End HKEY_
+              
+            End If ' End strSection
             
           End If ' End Line contains data
           
@@ -239,23 +343,23 @@ End Sub
 Sub GetScriptLocation()
   ' Set if started localy
   If Not Left(WScript.ScriptFullName, 2) = "\\" Then
-	
-	' What if mounted?
-	Set drv = fso.GetDrive(Left(WScript.ScriptFullName, 1))
-	If Not drv.DriveType = 2 Then
-		' Not a "Fixed" drive, not localy started
-		' 0 = "Unknown"
-		' 1 = "Removable"
-		' 2 = "Fixed"
-		' 3 = "Network"
-		' 4 = "CD-ROM"
-		' 5 = "RAM Disk"
-		' Mounted network location
-		boolStartedLocal = False
-	Else
-		' Fixed drive
-		boolStartedLocal = True
-	End If
+  
+  ' What if mounted?
+  Set drv = fso.GetDrive(Left(WScript.ScriptFullName, 1))
+  If Not drv.DriveType = 2 Then
+    ' Not a "Fixed" drive, not localy started
+    ' 0 = "Unknown"
+    ' 1 = "Removable"
+    ' 2 = "Fixed"
+    ' 3 = "Network"
+    ' 4 = "CD-ROM"
+    ' 5 = "RAM Disk"
+    ' Mounted network location
+    boolStartedLocal = False
+  Else
+    ' Fixed drive
+    boolStartedLocal = True
+  End If
   End If
   
   ' Set when local location temp
@@ -503,6 +607,16 @@ Sub UpdateServiceRequiresReboot()
 End Sub
 
 
+' Handles services as defined in INI file
+Sub HandleRegistry()
+  Logger(vbCrLf)
+  Logger("+-----------------------+")
+  Logger("¦       Registry        ¦")
+  Logger("+-----------------------+")
+  Logger(vbCrLf)
+  
+  Call ReadINIFile("Registry")
+End Sub
 
 ' Handle startup
 Sub CheckLocalStartup()
@@ -578,6 +692,107 @@ Sub CheckLocalStartup()
 End Sub
 
 
+' Writes Registry Values
+Function RegistryWrite(strRegType, strRootKey, strKey, strValueName, strValue)
+  
+  If Not strRegType = "KEY" Then
+    If Len(strValueName) = 0 Then
+      Logger("Setting empty registry default at """ & strKey & """")  
+    Else
+      Logger("Setting registry value for """ & strValueName & """ to """ & strValue & """")
+    End If
+  End If
+  
+  Set objContext = CreateObject("WbemScripting.SWbemNamedValueSet")
+  objContext.Add "__ProviderArchitecture", intOSArch
+  
+  Set objLocator = CreateObject("Wbemscripting.SWbemLocator")
+  Set objRegistry = objLocator.ConnectServer("", "root\default", "", "", , , , objContext).Get("StdRegProv")
+  
+  If Ucase(strRegType) = "KEY" Then
+    intReturnCode = objRegistry.CreateKey(strRootKey, strKey)
+  End If
+  
+  If Ucase(strRegType) = "REG_DWORD" Then
+    intReturnCode = objRegistry.SetDWORDValue(strRootKey, strKey, strValueName, strValue)
+  End If
+  
+  If Ucase(strRegType) = "REG_SZ" Then
+    intReturnCode = objRegistry.SetStringValue(strRootKey, strKey, strValueName, strValue)
+  End If
+  
+  If Ucase(strRegType) = "REG_EXPAND_SZ" Then
+    intReturnCode = objRegistry.SetExpandedStringValue(strRootKey, strKey, strValueName, strValue)
+  End If
+  
+  ' Failed
+  If Not intReturnCode = 0 Then
+    Logger("Error setting key """ & strKey & "\" & strValueName & """ Error: " & intReturnCode)
+    RegistryWrite = False
+  Else
+    'Passed
+    RegistryWrite = True
+  End If
+End Function
+
+
+'Reads different types of registry Values
+Function RegistryRead(strRootkey, strKey, strValueName, strRegType)
+    ' Where strRegType is:
+    ' GetStringValue
+    ' GetDWORDValue
+    ' GetExpandedStringValue 
+    ' GetQWORDValue  
+    ' GetBinaryValue   
+  
+  ' TODO: make objects global
+    Dim oInParams, oOutParams
+
+    Set objContext = CreateObject("WbemScripting.SWbemNamedValueSet")
+    objContext.Add "__ProviderArchitecture", intOSArch
+
+    Set objLocator = CreateObject("Wbemscripting.SWbemLocator")
+    Set objRegistry = objLocator.ConnectServer("", "root\default", "", "", , , , objContext).Get("StdRegProv")
+
+    Set oInParams = objRegistry.Methods_(strRegType).InParameters
+    oInParams.hDefKey = strRootkey
+    oInParams.sSubKeyName = strKey
+    oInParams.sValueName = strValueName
+
+    Set oOutParams = objRegistry.ExecMethod_(strRegType, oInParams, , objContext)
+    
+  ' Return Values
+    If strRegType = "GetDWORDValue" Or strRegType = "GetQWORDValue" Or strRegType = "GetBinaryValue" Then
+    RegistryRead = oOutParams.uValue
+    Else
+    RegistryRead = oOutParams.sValue
+  End If
+  
+End Function
+
+
+'Deletes Registry Values
+Function RegistryDelete(strRootkey, strKey, strValueName)
+  
+  Logger("Deleting Registry value for """ & strValueName & """")
+    
+  Set objContext = CreateObject("WbemScripting.SWbemNamedValueSet")
+  objContext.Add "__ProviderArchitecture", intOSArch
+  
+  Set objLocator = CreateObject("WbemScripting.SWbemLocator")
+  Set objRegistry = objLocator.ConnectServer("", "root\default", "", "", , , , objContext).Get("StdRegProv")
+  
+  intReturn = objRegistry.deletevalue(strRootkey, strKey, strValueName)
+  
+  If (intReturn <> 0) Or (Err.Number <> 0) Then
+    Logger("Error deleting key " & strKey & " Value Name " & strValueName & " Return code: " & CStr(intReturn) & " Error Description: " & Err.Description)
+    RegistryDelete = False
+  Else
+    RegistryDelete = True
+  End If
+End Function
+    
+
 ' Creates a random 8 char name
 Function RandomName()
   strRandomName = ""
@@ -636,9 +851,16 @@ End Sub
 ' Some vars...
 Sub Config()
   boolUserInteraction = True
+  intOSArch = GetObject("winmgmts:root\cimv2:Win32_Processor='cpu0'").AddressWidth
   strTEMPFolderPath = ws.ExpandEnvironmentStrings("%TEMP%")
   strINIFileName = CreateScriptINIFileName()
   strINIFilePath = strPath & "\" & strINIFileName
+  
+  dictAcceptedRegistryTypes.Add "REG_SZ", ""
+  dictAcceptedRegistryTypes.Add "REG_DWORD", ""
+  dictAcceptedRegistryTypes.Add "EXPAND_SZ", ""
+  dictAcceptedRegistryTypes.Add "KEY", ""
+ 
 End Sub
 
 
@@ -685,7 +907,7 @@ Sub INIT()
   ' Much more faster than firing up an uninstall of all updates which may not even
   ' be installed. Only installed spying updates will be removed
   Call InstalledUpdates
-  
+
   ' For each spying update in installed updates dictionary: remove
   Call RemoveUpdates
   
@@ -695,7 +917,10 @@ Sub INIT()
   ' Handle services as stated in INI file.
   ' Only disable|delete modes will be processed
   Call HandleServices
-  
+
+  ' Write or delete Registry entry
+  Call HandleRegistry
+    
   ' Some users disable windows update completely. In order to flag updates as "hidden",
   ' the Windows Update service needs to be available to search them. If the service is
   ' deactivated, it will enable the service

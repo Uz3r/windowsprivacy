@@ -43,4 +43,26 @@ For any upcoming "spying" updates, they can be easily added in INI file
 
 	> servicename=`action`
 
-Maybe more to come (registry)...
+##### Registry
+
+Can add or delete registry values
+
+Format:
+
+`KEY`||`SUBKEY`||`TYPE` or `ACTION`||`VALUE`
+
+Supported Keys:
+
+- `HKEY_LOCAL_MACHINE`
+- `HKEY_CURRENT_USER`
+- `HKEY_CLASSES_ROOT`
+- `HKEY_USERS`
+
+Accepted Types:
+
+- `REG_DWORD`
+- `REG_SZ`
+- `REG_EXPAND_SZ`
+
+Action is one of the TYPE or `DELETE`
+
